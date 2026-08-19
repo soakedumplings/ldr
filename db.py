@@ -1,0 +1,312 @@
+"""SQLite persistence for the LDR bot.
+
+We store only what streaks and scheduling need:
+  * members  — a person's timezone + personal sleep window (global to the person)
+  * groups   — group chats the bot lives in
+  * memberships — which people belong to which group, plus their per-group streak
+  * submissions — the current open week's Rose & Thorn entries (cleared after recap)
+  * group_state — bookkeeping so each group gets one daily prompt per day
+
+We never store chat messages or the pictures themselves — only a Telegram
+file_id reference for the current week, which is discarded once the recap posts.
+"""
+from __future__ import annotations
+
+import sqlite3
+import threading
+from contextlib import contextmanager
+from dataclasses import dataclass
+
+# Default sleep window: 01:00–08:00 local. Stored as minutes since midnight.
+DEFAULT_SLEEP_START = 1 * 60
+DEFAULT_SLEEP_END = 8 * 60
+
+
+@dataclass
+class Member:
+    user_id: int
+    name: str
+    timezone: str
+    sleep_start: int  # minutes since local midnight
+    sleep_end: int
+
+
+@dataclass
+class Submission:
+    user_id: int
+    name: str
+    kind: str  # "high" or "low"
+    caption: str
+    file_id: str
+
+
+class DB:
+    def __init__(self, path: str):
+        self._path = path
+        self._lock = threading.Lock()
+        self._conn = sqlite3.connect(path, check_same_thread=False)
+        self._conn.row_factory = sqlite3.Row
+        self._conn.execute("PRAGMA journal_mode=WAL")
+        self._init_schema()
+
+    def _init_schema(self) -> None:
+        with self._cursor() as cur:
+            cur.executescript(
+                """
+                CREATE TABLE IF NOT EXISTS members (
+                    user_id     INTEGER PRIMARY KEY,
+                    name        TEXT NOT NULL,
+                    timezone    TEXT NOT NULL,
+                    sleep_start INTEGER NOT NULL,
+                    sleep_end   INTEGER NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS groups (
+                    chat_id INTEGER PRIMARY KEY,
+                    title   TEXT
+                );
+
+                CREATE TABLE IF NOT EXISTS memberships (
+                    chat_id        INTEGER NOT NULL,
+                    user_id        INTEGER NOT NULL,
+                    current_streak INTEGER NOT NULL DEFAULT 0,
+                    best_streak    INTEGER NOT NULL DEFAULT 0,
+                    PRIMARY KEY (chat_id, user_id)
+                );
+
+                CREATE TABLE IF NOT EXISTS submissions (
+                    chat_id  INTEGER NOT NULL,
+                    user_id  INTEGER NOT NULL,
+                    week_key TEXT NOT NULL,
+                    kind     TEXT NOT NULL,
+                    caption  TEXT NOT NULL,
+                    file_id  TEXT NOT NULL,
+                    PRIMARY KEY (chat_id, user_id, week_key)
+                );
+
+                CREATE TABLE IF NOT EXISTS group_state (
+                    chat_id         INTEGER PRIMARY KEY,
+                    last_daily_date TEXT,
+                    last_rt_open    TEXT,
+                    last_rt_recap   TEXT
+                );
+                """
+            )
+
+    @contextmanager
+    def _cursor(self):
+        with self._lock:
+            cur = self._conn.cursor()
+            try:
+                yield cur
+                self._conn.commit()
+            finally:
+                cur.close()
+
+    # ---- members -------------------------------------------------------
+    def upsert_member(
+        self,
+        user_id: int,
+        name: str,
+        timezone: str,
+        sleep_start: int = DEFAULT_SLEEP_START,
+        sleep_end: int = DEFAULT_SLEEP_END,
+    ) -> None:
+        with self._cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO members (user_id, name, timezone, sleep_start, sleep_end)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(user_id) DO UPDATE SET
+                    name=excluded.name,
+                    timezone=excluded.timezone,
+                    sleep_start=excluded.sleep_start,
+                    sleep_end=excluded.sleep_end
+                """,
+                (user_id, name, timezone, sleep_start, sleep_end),
+            )
+
+    def get_member(self, user_id: int) -> Member | None:
+        with self._cursor() as cur:
+            row = cur.execute(
+                "SELECT * FROM members WHERE user_id=?", (user_id,)
+            ).fetchone()
+        return _row_to_member(row) if row else None
+
+    # ---- groups & membership ------------------------------------------
+    def register_group(self, chat_id: int, title: str | None) -> None:
+        with self._cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO groups (chat_id, title) VALUES (?, ?)
+                ON CONFLICT(chat_id) DO UPDATE SET title=excluded.title
+                """,
+                (chat_id, title),
+            )
+
+    def add_membership(self, chat_id: int, user_id: int) -> None:
+        with self._cursor() as cur:
+            cur.execute(
+                """
+                INSERT OR IGNORE INTO memberships (chat_id, user_id)
+                VALUES (?, ?)
+                """,
+                (chat_id, user_id),
+            )
+
+    def all_group_ids(self) -> list[int]:
+        with self._cursor() as cur:
+            rows = cur.execute("SELECT chat_id FROM groups").fetchall()
+        return [r["chat_id"] for r in rows]
+
+    def group_members(self, chat_id: int) -> list[Member]:
+        """Members of a group who have completed /setup (have a timezone)."""
+        with self._cursor() as cur:
+            rows = cur.execute(
+                """
+                SELECT m.* FROM members m
+                JOIN memberships ms ON ms.user_id = m.user_id
+                WHERE ms.chat_id = ?
+                ORDER BY m.name COLLATE NOCASE
+                """,
+                (chat_id,),
+            ).fetchall()
+        return [_row_to_member(r) for r in rows]
+
+    def groups_for_user(self, user_id: int) -> list[int]:
+        with self._cursor() as cur:
+            rows = cur.execute(
+                "SELECT chat_id FROM memberships WHERE user_id=?", (user_id,)
+            ).fetchall()
+        return [r["chat_id"] for r in rows]
+
+    # ---- submissions ---------------------------------------------------
+    def save_submission(
+        self,
+        chat_id: int,
+        user_id: int,
+        week_key: str,
+        kind: str,
+        caption: str,
+        file_id: str,
+    ) -> None:
+        with self._cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO submissions (chat_id, user_id, week_key, kind, caption, file_id)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(chat_id, user_id, week_key) DO UPDATE SET
+                    kind=excluded.kind,
+                    caption=excluded.caption,
+                    file_id=excluded.file_id
+                """,
+                (chat_id, user_id, week_key, kind, caption, file_id),
+            )
+
+    def has_submitted(self, chat_id: int, user_id: int, week_key: str) -> bool:
+        with self._cursor() as cur:
+            row = cur.execute(
+                "SELECT 1 FROM submissions WHERE chat_id=? AND user_id=? AND week_key=?",
+                (chat_id, user_id, week_key),
+            ).fetchone()
+        return row is not None
+
+    def week_submissions(self, chat_id: int, week_key: str) -> list[Submission]:
+        with self._cursor() as cur:
+            rows = cur.execute(
+                """
+                SELECT s.user_id, m.name, s.kind, s.caption, s.file_id
+                FROM submissions s
+                JOIN members m ON m.user_id = s.user_id
+                WHERE s.chat_id=? AND s.week_key=?
+                ORDER BY m.name COLLATE NOCASE
+                """,
+                (chat_id, week_key),
+            ).fetchall()
+        return [
+            Submission(r["user_id"], r["name"], r["kind"], r["caption"], r["file_id"])
+            for r in rows
+        ]
+
+    def clear_week(self, chat_id: int, week_key: str) -> None:
+        with self._cursor() as cur:
+            cur.execute(
+                "DELETE FROM submissions WHERE chat_id=? AND week_key=?",
+                (chat_id, week_key),
+            )
+
+    # ---- streaks -------------------------------------------------------
+    def get_streak(self, chat_id: int, user_id: int) -> tuple[int, int]:
+        with self._cursor() as cur:
+            row = cur.execute(
+                "SELECT current_streak, best_streak FROM memberships WHERE chat_id=? AND user_id=?",
+                (chat_id, user_id),
+            ).fetchone()
+        if not row:
+            return (0, 0)
+        return (row["current_streak"], row["best_streak"])
+
+    def bump_streak(self, chat_id: int, user_id: int) -> int:
+        """Increment a member's streak; keep best_streak as the high-water mark."""
+        with self._cursor() as cur:
+            cur.execute(
+                """
+                UPDATE memberships
+                SET current_streak = current_streak + 1,
+                    best_streak = MAX(best_streak, current_streak + 1)
+                WHERE chat_id=? AND user_id=?
+                """,
+                (chat_id, user_id),
+            )
+            row = cur.execute(
+                "SELECT current_streak FROM memberships WHERE chat_id=? AND user_id=?",
+                (chat_id, user_id),
+            ).fetchone()
+        return row["current_streak"] if row else 0
+
+    def break_streak(self, chat_id: int, user_id: int) -> int:
+        """Reset streak to 0, returning the streak length that just died."""
+        with self._cursor() as cur:
+            row = cur.execute(
+                "SELECT current_streak FROM memberships WHERE chat_id=? AND user_id=?",
+                (chat_id, user_id),
+            ).fetchone()
+            had = row["current_streak"] if row else 0
+            cur.execute(
+                "UPDATE memberships SET current_streak = 0 WHERE chat_id=? AND user_id=?",
+                (chat_id, user_id),
+            )
+        return had
+
+    # ---- group scheduling state ---------------------------------------
+    def get_group_state(self, chat_id: int) -> dict:
+        with self._cursor() as cur:
+            row = cur.execute(
+                "SELECT * FROM group_state WHERE chat_id=?", (chat_id,)
+            ).fetchone()
+        if not row:
+            return {"last_daily_date": None, "last_rt_open": None, "last_rt_recap": None}
+        return dict(row)
+
+    def set_group_state(self, chat_id: int, **fields) -> None:
+        if not fields:
+            return
+        with self._cursor() as cur:
+            cur.execute(
+                "INSERT OR IGNORE INTO group_state (chat_id) VALUES (?)", (chat_id,)
+            )
+            assignments = ", ".join(f"{k}=?" for k in fields)
+            cur.execute(
+                f"UPDATE group_state SET {assignments} WHERE chat_id=?",
+                (*fields.values(), chat_id),
+            )
+
+
+def _row_to_member(row: sqlite3.Row) -> Member:
+    return Member(
+        user_id=row["user_id"],
+        name=row["name"],
+        timezone=row["timezone"],
+        sleep_start=row["sleep_start"],
+        sleep_end=row["sleep_end"],
+    )

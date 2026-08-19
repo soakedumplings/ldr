@@ -1,0 +1,11 @@
+# flyctl launch added from .gitignore
+# in-memory secrets & local files
+**/.env
+**/*.db
+**/*.db-wal
+**/*.db-shm
+**/__pycache__
+**/*.pyc
+**/.venv
+**/venv
+fly.toml
