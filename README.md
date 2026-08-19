@@ -117,43 +117,6 @@ That's it — it runs 24/7. To update code later: `fly deploy` again.
 > ask for a card it's just for verification; a 256MB shared VM stays within free
 > limits.
 
-### Option B — Oracle Cloud "Always Free" (sturdiest free-forever)
-
-1. Sign up at https://www.oracle.com/cloud/free/ and create an **Always Free**
-   `VM.Standard.A1` (ARM) or `E2.1.Micro` instance running Ubuntu.
-2. SSH in, then:
-   ```bash
-   sudo apt update && sudo apt install -y python3-venv git
-   git clone <your-repo-or-scp-the-files> ldr && cd ldr
-   python3 -m venv .venv && source .venv/bin/activate
-   pip install -r requirements.txt
-   cp .env.example .env && nano .env     # paste your keys
-   ```
-3. Keep it running forever with systemd:
-   ```bash
-   sudo tee /etc/systemd/system/ldrbot.service >/dev/null <<'UNIT'
-   [Unit]
-   Description=LDR Telegram bot
-   After=network-online.target
-
-   [Service]
-   WorkingDirectory=/home/ubuntu/ldr
-   ExecStart=/home/ubuntu/ldr/.venv/bin/python bot.py
-   Restart=always
-   RestartSec=5
-
-   [Install]
-   WantedBy=multi-user.target
-   UNIT
-   sudo systemctl daemon-reload
-   sudo systemctl enable --now ldrbot
-   sudo systemctl status ldrbot     # confirm it's running
-   ```
-   Logs: `journalctl -u ldrbot -f`
-
-> ⚠️ Avoid Render/Railway free tiers for this bot — they **sleep when idle**,
-> which would skip scheduled prompts and can wipe the streak file.
-
 ---
 
 ## Privacy
