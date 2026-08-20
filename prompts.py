@@ -65,9 +65,6 @@ SLEEP_PINGS_SAVAGE = [
 # No specific target — everyone joins in. Fire any time.
 GROUP_PROMPTS = [
     "EVERYONE: last photo in your camera roll. GO. No editing, no explaining 📸",
-    "One cursed emoji to describe your day. Just one. Defend it in the replies 💀",
-    "Post a pic of the messiest corner near you right now. Winner = worst 🗑️",
-    "Hot take o'clock: drop your spiciest opinion, group votes 🌶️",
     "Show us your screen time number. No cropping. We're all disappointed together 📱",
     "Sum up your week so far in a movie title 🎬",
     "Ugliest selfie you can produce in 10 seconds. Beauty is banned today 🤪",
@@ -79,14 +76,9 @@ GROUP_PROMPTS = [
 # Softer connection prompts; {name} lines target a random member.
 CONNECTION_PROMPTS_TARGETED = [
     "Send {name} a voice note — you haven't heard their voice in too long 🎙️",
-    "Tag {name} and finish this: 'I wish you were here for ___' ✈️",
-    "{name}, who in this group did you think about this week and why? (be honest, be soft) 🫶",
 ]
 CONNECTION_PROMPTS_GENERAL = [
-    "Tag the person you'd fly to first if flights were free ✈️",
     "Drop a throwback pic of the group. Instant nostalgia tax 📼",
-    "If you could teleport to one person right now, who — and what would you do? 🌍",
-    "Unpopular opinion: which timezone here has it worst? Discuss 🕐",
 ]
 
 
