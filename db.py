@@ -5,6 +5,7 @@ We store only what streaks and scheduling need:
   * groups   — group chats the bot lives in
   * memberships — which people belong to which group, plus their per-group streak
   * submissions — the current open week's Rose & Thorn entries (cleared after recap)
+  * daily_prompts/responses — one-tap daily check-ins and anonymous totals
   * group_state — bookkeeping so each group gets one daily prompt per day
 
 We never store chat messages or the pictures themselves — only a Telegram
@@ -71,6 +72,7 @@ class DB:
                     user_id        INTEGER NOT NULL,
                     current_streak INTEGER NOT NULL DEFAULT 0,
                     best_streak    INTEGER NOT NULL DEFAULT 0,
+                    daily_callout_active INTEGER NOT NULL DEFAULT 0,
                     PRIMARY KEY (chat_id, user_id)
                 );
 
@@ -88,10 +90,37 @@ class DB:
                     chat_id         INTEGER PRIMARY KEY,
                     last_daily_date TEXT,
                     last_rt_open    TEXT,
-                    last_rt_recap   TEXT
+                    last_rt_recap   TEXT,
+                    daily_prompt_cycle INTEGER NOT NULL DEFAULT 0
+                );
+
+                CREATE TABLE IF NOT EXISTS daily_prompts (
+                    chat_id     INTEGER NOT NULL,
+                    prompt_date TEXT NOT NULL,
+                    prompt_id   TEXT NOT NULL,
+                    cycle       INTEGER NOT NULL DEFAULT 0,
+                    message_id  INTEGER,
+                    PRIMARY KEY (chat_id, prompt_date)
+                );
+
+                CREATE TABLE IF NOT EXISTS daily_responses (
+                    chat_id     INTEGER NOT NULL,
+                    prompt_date TEXT NOT NULL,
+                    user_id     INTEGER NOT NULL,
+                    prompt_id   TEXT NOT NULL,
+                    option_id   TEXT NOT NULL,
+                    PRIMARY KEY (chat_id, prompt_date, user_id)
                 );
                 """
             )
+            self._ensure_column(cur, "memberships", "daily_callout_active", "INTEGER NOT NULL DEFAULT 0")
+            self._ensure_column(cur, "group_state", "daily_prompt_cycle", "INTEGER NOT NULL DEFAULT 0")
+
+    @staticmethod
+    def _ensure_column(cur, table: str, column: str, definition: str) -> None:
+        columns = {row[1] for row in cur.execute(f"PRAGMA table_info({table})")}
+        if column not in columns:
+            cur.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
     @contextmanager
     def _cursor(self):
@@ -154,6 +183,10 @@ class DB:
                 (chat_id, user_id),
             )
 
+    def close(self) -> None:
+        with self._lock:
+            self._conn.close()
+
     def all_group_ids(self) -> list[int]:
         with self._cursor() as cur:
             rows = cur.execute("SELECT chat_id FROM groups").fetchall()
@@ -179,6 +212,14 @@ class DB:
                 "SELECT chat_id FROM memberships WHERE user_id=?", (user_id,)
             ).fetchall()
         return [r["chat_id"] for r in rows]
+
+    def is_group_member(self, chat_id: int, user_id: int) -> bool:
+        with self._cursor() as cur:
+            row = cur.execute(
+                "SELECT 1 FROM memberships WHERE chat_id=? AND user_id=?",
+                (chat_id, user_id),
+            ).fetchone()
+        return row is not None
 
     # ---- submissions ---------------------------------------------------
     def save_submission(
@@ -285,7 +326,12 @@ class DB:
                 "SELECT * FROM group_state WHERE chat_id=?", (chat_id,)
             ).fetchone()
         if not row:
-            return {"last_daily_date": None, "last_rt_open": None, "last_rt_recap": None}
+            return {
+                "last_daily_date": None,
+                "last_rt_open": None,
+                "last_rt_recap": None,
+                "daily_prompt_cycle": 0,
+            }
         return dict(row)
 
     def set_group_state(self, chat_id: int, **fields) -> None:
@@ -300,6 +346,152 @@ class DB:
                 f"UPDATE group_state SET {assignments} WHERE chat_id=?",
                 (*fields.values(), chat_id),
             )
+
+    # ---- one-tap daily check-ins --------------------------------------
+    def daily_prompt_cycle(self, chat_id: int) -> int:
+        return int(self.get_group_state(chat_id).get("daily_prompt_cycle") or 0)
+
+    def used_daily_prompt_ids(self, chat_id: int, cycle: int) -> set[str]:
+        with self._cursor() as cur:
+            rows = cur.execute(
+                "SELECT DISTINCT prompt_id FROM daily_prompts WHERE chat_id=? AND cycle=?",
+                (chat_id, cycle),
+            ).fetchall()
+        return {row["prompt_id"] for row in rows}
+
+    def next_daily_prompt_cycle(self, chat_id: int) -> int:
+        cycle = self.daily_prompt_cycle(chat_id) + 1
+        self.set_group_state(chat_id, daily_prompt_cycle=cycle)
+        return cycle
+
+    def record_daily_prompt(
+        self,
+        chat_id: int,
+        prompt_date: str,
+        prompt_id: str,
+        cycle: int = 0,
+        message_id: int | None = None,
+    ) -> None:
+        with self._cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO daily_prompts
+                    (chat_id, prompt_date, prompt_id, cycle, message_id)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(chat_id, prompt_date) DO UPDATE SET
+                    prompt_id=excluded.prompt_id,
+                    cycle=excluded.cycle,
+                    message_id=excluded.message_id
+                """,
+                (chat_id, prompt_date, prompt_id, cycle, message_id),
+            )
+
+    def update_daily_prompt_message(self, chat_id: int, prompt_date: str, message_id: int) -> None:
+        with self._cursor() as cur:
+            cur.execute(
+                "UPDATE daily_prompts SET message_id=? WHERE chat_id=? AND prompt_date=?",
+                (message_id, chat_id, prompt_date),
+            )
+
+    def get_daily_prompt(self, chat_id: int, prompt_date: str) -> dict | None:
+        with self._cursor() as cur:
+            row = cur.execute(
+                "SELECT * FROM daily_prompts WHERE chat_id=? AND prompt_date=?",
+                (chat_id, prompt_date),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def record_daily_response(
+        self,
+        chat_id: int,
+        user_id: int,
+        prompt_date: str,
+        prompt_id: str,
+        option_id: str,
+    ) -> bool:
+        with self._cursor() as cur:
+            cur.execute(
+                """
+                INSERT OR IGNORE INTO daily_responses
+                    (chat_id, prompt_date, user_id, prompt_id, option_id)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (chat_id, prompt_date, user_id, prompt_id, option_id),
+            )
+            inserted = cur.rowcount == 1
+            if inserted:
+                cur.execute(
+                    """
+                    UPDATE memberships
+                    SET daily_callout_active=0
+                    WHERE chat_id=? AND user_id=?
+                    """,
+                    (chat_id, user_id),
+                )
+        return inserted
+
+    def daily_response_counts(self, chat_id: int, prompt_date: str) -> dict[str, int]:
+        with self._cursor() as cur:
+            rows = cur.execute(
+                """
+                SELECT option_id, COUNT(*) AS total
+                FROM daily_responses
+                WHERE chat_id=? AND prompt_date=?
+                GROUP BY option_id
+                """,
+                (chat_id, prompt_date),
+            ).fetchall()
+        return {row["option_id"]: row["total"] for row in rows}
+
+    def prepare_daily_callouts(self, chat_id: int, before_date: str) -> list[Member]:
+        """Mark and return members who missed the previous two prompts once."""
+        with self._cursor() as cur:
+            prompt_rows = cur.execute(
+                """
+                SELECT prompt_date
+                FROM daily_prompts
+                WHERE chat_id=? AND prompt_date < ?
+                ORDER BY prompt_date DESC
+                LIMIT 2
+                """,
+                (chat_id, before_date),
+            ).fetchall()
+            prompt_dates = [row["prompt_date"] for row in prompt_rows]
+            if len(prompt_dates) < 2:
+                return []
+
+            rows = cur.execute(
+                """
+                SELECT m.*
+                FROM members m
+                JOIN memberships ms ON ms.user_id=m.user_id
+                WHERE ms.chat_id=? AND ms.daily_callout_active=0
+                ORDER BY m.name COLLATE NOCASE
+                """,
+                (chat_id,),
+            ).fetchall()
+
+            callouts = []
+            for row in rows:
+                answered = cur.execute(
+                    """
+                    SELECT COUNT(*) AS total
+                    FROM daily_responses
+                    WHERE chat_id=? AND user_id=? AND prompt_date IN (?, ?)
+                    """,
+                    (chat_id, row["user_id"], prompt_dates[0], prompt_dates[1]),
+                ).fetchone()["total"]
+                if answered == 0:
+                    cur.execute(
+                        """
+                        UPDATE memberships
+                        SET daily_callout_active=1
+                        WHERE chat_id=? AND user_id=?
+                        """,
+                        (chat_id, row["user_id"]),
+                    )
+                    callouts.append(_row_to_member(row))
+        return callouts
 
 
 def _row_to_member(row: sqlite3.Row) -> Member:
