@@ -493,6 +493,21 @@ class DB:
                     callouts.append(_row_to_member(row))
         return callouts
 
+    def active_daily_callouts(self, chat_id: int) -> list[Member]:
+        """Return members currently marked for a missed-check-in callout."""
+        with self._cursor() as cur:
+            rows = cur.execute(
+                """
+                SELECT m.*
+                FROM members m
+                JOIN memberships ms ON ms.user_id=m.user_id
+                WHERE ms.chat_id=? AND ms.daily_callout_active=1
+                ORDER BY m.name COLLATE NOCASE
+                """,
+                (chat_id,),
+            ).fetchall()
+        return [_row_to_member(row) for row in rows]
+
 
 def _row_to_member(row: sqlite3.Row) -> Member:
     return Member(
