@@ -36,11 +36,13 @@ class DailyResponseTests(unittest.TestCase):
 
         self.assertEqual([member.user_id for member in first_callout], [7])
         self.assertEqual(second_callout, [])
+        self.assertEqual([member.user_id for member in self.db.active_daily_callouts(100)], [7])
 
         self.db.record_daily_prompt(100, "2026-09-03", "p3")
         self.assertTrue(
             self.db.record_daily_response(100, 7, "2026-09-03", "p3", "okay")
         )
+        self.assertEqual(self.db.active_daily_callouts(100), [])
 
         self.db.record_daily_prompt(100, "2026-09-04", "p4")
         self.db.record_daily_prompt(100, "2026-09-05", "p5")

@@ -20,6 +20,7 @@ from telegram.ext import (
     CommandHandler,
     ContextTypes,
     MessageHandler,
+    CallbackQueryHandler,
     filters,
 )
 
@@ -51,8 +52,8 @@ HELP_TEXT = (
     "🌹 *Weekly Rose & Thorn* — I DM you for *one* photo + a caption saying if "
     "it's a HIGH 🌹 or LOW 🥀 and a quick note. Miss it = streak dies (publicly 💔). "
     "Sunday I post the group recap.\n"
-    "📸 *Daily surprise* — lunch pics, wake-up selfies, or 'it's 3am for X, "
-    "roast or love them.' Timed to each person's real clock.\n\n"
+    "📊 *Daily check-in* — answer one short question with one tap. "
+    "Results are shown as anonymous group totals.\n\n"
     "_Add me to your friend group, everyone runs /setup, then just live your "
     "life. I'll do the clingy part._"
 )
@@ -268,6 +269,59 @@ async def cmd_me(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 # --------------------------------------------------------------------------
+# daily one-tap check-ins
+# --------------------------------------------------------------------------
+async def on_daily_answer(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Record one valid daily answer and refresh anonymous totals."""
+    query = update.callback_query
+
+    parts = (query.data or "").split("|", 3)
+    if len(parts) != 4 or parts[0] != "daily":
+        await query.answer()
+        return
+
+    _, prompt_date, prompt_id, option_id = parts
+    chat = query.message.chat
+    user = query.from_user
+    db: DB = context.application.bot_data["db"]
+    if chat.type not in (ChatType.GROUP, ChatType.SUPERGROUP):
+        await query.answer("This check-in is for the group chat.", show_alert=True)
+        return
+    if not db.is_group_member(chat.id, user.id):
+        await query.answer("Run /setup in this group first.", show_alert=True)
+        return
+
+    daily_prompt = db.get_daily_prompt(chat.id, prompt_date)
+    option = prompts.get_prompt_option(prompt_id, option_id)
+    if (
+        daily_prompt is None
+        or db.get_group_state(chat.id).get("last_daily_date") != prompt_date
+        or daily_prompt["prompt_id"] != prompt_id
+        or option is None
+    ):
+        await query.answer("This check-in is no longer active.", show_alert=True)
+        return
+
+    inserted = db.record_daily_response(
+        chat.id, user.id, prompt_date, prompt_id, option_id
+    )
+    if not inserted:
+        await query.answer("You already answered this check-in.")
+        return
+
+    counts = db.daily_response_counts(chat.id, prompt_date)
+    prompt = prompts.get_daily_prompt(prompt_id)
+    await query.edit_message_text(
+        text=prompts.format_daily_message(
+            prompt, counts, db.active_daily_callouts(chat.id)
+        ),
+        parse_mode="HTML",
+        reply_markup=prompts.daily_keyboard(prompt, prompt_date),
+    )
+    await query.answer(f"Saved: {option.label}")
+
+
+# --------------------------------------------------------------------------
 # Rose & Thorn photo capture (private DM only)
 # --------------------------------------------------------------------------
 async def on_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -398,6 +452,7 @@ def main() -> None:
     app.add_handler(CommandHandler("sleep", cmd_sleep))
     app.add_handler(CommandHandler("board", cmd_board))
     app.add_handler(CommandHandler("me", cmd_me))
+    app.add_handler(CallbackQueryHandler(on_daily_answer, pattern=r"^daily\|"))
 
     app.add_handler(MessageHandler(filters.PHOTO, on_photo))
     app.add_handler(

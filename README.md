@@ -1,18 +1,17 @@
 # 🌍 LDR Bot
 
-A chaotic-funny Telegram bot for friends in a long-distance friendship across
-timezones. It keeps you attached with **low effort, high chaos** — daily
-timezone-aware prompts and a weekly **Rose & Thorn** photo ritual with streaks.
-No same-time coordination needed; everything is async.
+A Telegram bot for friends in a long-distance friendship across timezones. It
+keeps you connected with lightweight daily check-ins and a weekly **Rose & Thorn**
+photo ritual with streaks. No same-time coordination needed; everything is async.
 
 - 🌹 **Weekly Rose & Thorn** — the bot DMs each person for **one photo + a caption**
   saying if it's a HIGH 🌹 or LOW 🥀 with a short note. Miss it → your streak dies
   publicly 💔. Sunday it posts a group recap (Gemini writes the intro).
-- 📸 **Daily surprise prompt** — lunch pics, wake-up selfies, "it's 3am for X —
-  roast or love them", group chaos bombs. Timed to each person's *real* local clock.
+- 📊 **Daily check-in** — one short question with predefined one-tap answers.
+  Results appear as anonymous totals. Prompts rotate through the full bank before
+  repeating. Anyone who misses two check-ins can receive a dramatic group callout.
 - 🌍 **Multi-group aware** — add it to several friend groups. Recaps and
-  "it's 3am for Amy" messages go **only to the group(s) Amy is in**, never leak
-  across chats.
+  daily check-ins go **only to the relevant group**, never leak across chats.
 - ⚙️ **Per-person timezone + sleep window**, changeable anytime with `/setup`.
 
 ---
@@ -43,8 +42,8 @@ Open `.env` and replace the placeholders:
 - **`TELEGRAM_BOT_TOKEN`** — required (see step 2).
 - **`GEMINI_API_KEY`** — optional. Get a free key at
   https://aistudio.google.com/apikey . Standard keys start with `AIza...`.
-  Without it the bot still works — it just uses pre-written funny lines instead
-  of AI-generated ones.
+  Without it the bot still works — only the optional recap introduction loses its
+  AI-generated wording.
 
 > The bot already has a **Gemini failover chain**: on a rate-limit (429) it
 > tries `gemini-2.5-flash → 2.5-flash-lite → 2.0-flash → 2.0-flash-lite`, and if
@@ -104,7 +103,7 @@ for the SQLite streak file.
    ```
 5. Deploy:
    ```bash
-   fly deploy
+   fly deploy --remote-only --depot=false
    ```
 6. Check it's alive:
    ```bash
@@ -122,8 +121,9 @@ That's it — it runs 24/7. To update code later: `fly deploy` again.
 ## Privacy
 
 The bot stores only what streaks and scheduling need: each person's timezone +
-sleep window, group membership, and streak counts. The current week's Rose &
-Thorn entry keeps a Telegram photo reference + caption **only until the Sunday
+sleep window, group membership, streak counts, and one-tap daily check-in
+responses. Daily response totals are shown anonymously. The current week's Rose
+& Thorn entry keeps a Telegram photo reference + caption **only until the Sunday
 recap posts**, then it's deleted. No chat messages are stored. Secrets live in
 `.env` (git-ignored), never in code.
 
@@ -132,9 +132,9 @@ recap posts**, then it's deleted. No chat messages are stored. Secrets live in
 ```
 bot.py           commands, photo capture, group tracking, entrypoint
 scheduler.py     hourly tick: daily prompts + weekly Rose & Thorn per group
-prompts.py       the prompt bank (activity / 3am pings / chaos / connection)
+prompts.py       short one-tap daily prompt bank and button rendering
 gemini.py        Gemini model fallback chain + backoff (optional)
-db.py            SQLite: members, groups, streaks, weekly submissions
+db.py            SQLite: members, groups, streaks, weekly submissions, daily responses
 config.py        .env loader
 .env.example     placeholder keys to copy to .env
 Dockerfile       container for hosting

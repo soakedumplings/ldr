@@ -1,4 +1,4 @@
-"""Scheduling logic: one daily prompt per group, plus the weekly Rose & Thorn.
+"""Scheduling logic: one daily check-in per group, plus weekly Rose & Thorn.
 
 Everything is driven by a single hourly tick (`run_tick`) wired into
 python-telegram-bot's JobQueue. Keeping it to one entry point means there is no
@@ -6,16 +6,12 @@ extra scheduler process to host — it rides along with the bot's long-polling
 loop, which matters for free hosting.
 
 Timezone rules that make the bot feel personal:
-  * Daily prompts are chosen from members' CURRENT local times, so a "lunch pic"
-    only ever names someone who is actually at lunch, and a "3am for X" only
-    fires while X is genuinely asleep.
-  * Every message is scoped to ONE group: a prompt naming Amy goes only to the
-    group(s) Amy is in, never to unrelated chats.
+  * Daily check-ins are short, neutral, and answerable with one tap.
+  * Every check-in is scoped to exactly one group and never crosses group chats.
 """
 from __future__ import annotations
 
 import logging
-import random
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -23,15 +19,6 @@ from db import DB, Member
 import prompts
 
 log = logging.getLogger(__name__)
-
-# Local-hour -> activity bucket for timezone-aware "do a thing now" prompts.
-_ACTIVITY_WINDOWS = {
-    7: "wake", 8: "wake",
-    12: "lunch", 13: "lunch",
-    15: "afternoon", 16: "afternoon",
-    18: "evening", 19: "evening",
-    22: "night", 23: "night",
-}
 
 # Weekly cadence (UTC day-of-week: Mon=0 .. Sun=6).
 _RT_OPEN_DOW = 4   # Friday: DM everyone for their submission
@@ -72,65 +59,10 @@ def week_key(dt: datetime) -> str:
 
 
 # --------------------------------------------------------------------------
-# daily prompt
-# --------------------------------------------------------------------------
-def choose_daily_prompt(members: list[Member], gemini) -> str | None:
-    """Pick one prompt for a group based on members' current local times.
-
-    Returns None if nobody is awake anywhere (don't shout into an empty room).
-    """
-    awake_activity: list[tuple[str, str]] = []  # (activity_key, name)
-    asleep_names: list[str] = []
-    any_awake = False
-    all_names = [m.name for m in members]
-
-    for m in members:
-        now = _local_now(m.timezone)
-        if now is None:
-            continue
-        if _is_asleep(m, now):
-            asleep_names.append(m.name)
-            continue
-        any_awake = True
-        bucket = _ACTIVITY_WINDOWS.get(now.hour)
-        if bucket:
-            awake_activity.append((bucket, m.name))
-
-    if not any_awake and not asleep_names:
-        return None
-    if not any_awake:
-        # Everyone's asleep — only a sleep ping makes sense (someone elsewhere
-        # awake would have set any_awake). Skip; wait for the next tick.
-        return None
-
-    # Build a weighted menu from what's actually available right now.
-    menu: list[str] = []
-    if awake_activity:
-        menu += ["activity"] * 3
-    if asleep_names:
-        menu += ["sleep"] * 2
-    menu += ["group"] * 2
-    menu += ["connection"] * 1
-
-    choice = random.choice(menu)
-    if choice == "activity":
-        key, name = random.choice(awake_activity)
-        base = prompts.pick_activity(key, name)
-    elif choice == "sleep":
-        base = prompts.pick_sleep_ping(random.choice(asleep_names))
-    elif choice == "connection":
-        base = prompts.pick_connection_prompt(all_names)
-    else:
-        base = prompts.pick_group_prompt()
-
-    return prompts.flavour(gemini, base)
-
-
-# --------------------------------------------------------------------------
 # the tick
 # --------------------------------------------------------------------------
 async def run_tick(bot, db: DB, gemini) -> None:
-    """Called hourly. Handles daily prompts + weekly Rose & Thorn per group."""
+    """Called hourly. Handles daily check-ins + weekly Rose & Thorn per group."""
     now_utc = datetime.now(ZoneInfo("UTC"))
     wk = week_key(now_utc)
 
@@ -161,10 +93,29 @@ async def run_tick(bot, db: DB, gemini) -> None:
         # --- daily prompt (once per UTC day per group) ---
         today = now_utc.date().isoformat()
         if state.get("last_daily_date") != today:
-            text = choose_daily_prompt(members, gemini)
-            if text:
-                await _safe_send(bot, chat_id, text)
-                db.set_group_state(chat_id, last_daily_date=today)
+            await _send_daily_checkin(bot, db, chat_id, today)
+
+
+async def _send_daily_checkin(bot, db: DB, chat_id: int, today: str) -> None:
+    """Send a fresh one-tap check-in and record it only after delivery."""
+    state = db.get_group_state(chat_id)
+    cycle = int(state.get("daily_prompt_cycle") or 0)
+    used_ids = db.used_daily_prompt_ids(chat_id, cycle)
+    if len(used_ids) >= len(prompts.daily_prompt_ids()):
+        cycle = db.next_daily_prompt_cycle(chat_id)
+        used_ids = set()
+
+    prompt_id = prompts.choose_daily_prompt_id(used_ids)
+    prompt = prompts.get_daily_prompt(prompt_id)
+    callouts = db.prepare_daily_callouts(chat_id, today)
+    message = await bot.send_message(
+        chat_id=chat_id,
+        text=prompts.format_daily_message(prompt, {}, callouts),
+        parse_mode="HTML",
+        reply_markup=prompts.daily_keyboard(prompt, today),
+    )
+    db.record_daily_prompt(chat_id, today, prompt_id, cycle, message.message_id)
+    db.set_group_state(chat_id, last_daily_date=today)
 
 
 async def _open_rose_and_thorn(bot, db: DB, chat_id, members, wk: str) -> None:
