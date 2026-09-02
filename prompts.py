@@ -1,131 +1,295 @@
-"""The daily prompt bank + Gemini flavour.
+"""Short, one-tap daily check-ins.
 
-Prompts fall into four buckets:
-
-  * ACTIVITY   — tied to a member's LOCAL clock (lunch, wake-up, evening...).
-                 The scheduler only fires these at a member whose local time
-                 matches, and names that member with {name}.
-  * SLEEP_PING — fired at the group of someone who's currently asleep; the
-                 group leaves notes (sweet) or roasts them (savage).
-  * GROUP      — everyone answers, no specific person, fires any time of day.
-  * CONNECTION — softer "missing you" prompts; some name a {name}.
-
-`flavour()` optionally runs the chosen line through Gemini so the exact wording
-varies day to day. If Gemini is unavailable the original line is used verbatim.
+Every daily prompt has predefined options so nobody needs to write a reply.
+The bank is intentionally direct and neutral. The scheduler rotates through
+the bank before reusing a prompt.
 """
 from __future__ import annotations
 
 import random
-
-# Activity prompts keyed by the local-time window they belong to.
-# The scheduler maps a member's current local hour to one of these keys.
-ACTIVITY_PROMPTS: dict[str, list[str]] = {
-    "wake": [
-        "Just-woke-up selfie, {name}. Raw. Ungoverned. Gremlin mode. 🛌",
-        "Morning, {name}! Post your face before the coffee fixes it ☕😵",
-        "{name} is waking up somewhere on Earth — first-thing-I-saw pic, GO 🌅",
-    ],
-    "lunch": [
-        "{name}, it's noon where you are — lunch pic before you inhale it, coward 🍜",
-        "Midday check: {name}, show us the sad desk lunch / gourmet flex 🍱",
-        "It's lunchtime for {name}. Rate your meal AND your life, 1–10 🍕",
-    ],
-    "afternoon": [
-        "It's mid-afternoon for {name} — show us the most cursed thing you can see right now 👀",
-        "{name}, 3pm slump pic. Prove you're still conscious 🥱",
-        "Coffee/tea run for {name}? Snap it and rate your will to live ☕",
-    ],
-    "evening": [
-        "It's 5pm for {name} — show us your 'I'm done pretending to work' face 💼",
-        "Golden hour where {name} is — one pretty pic of your view, make us jealous 🌇",
-        "{name}, sunset check. Or ceiling check. We'll take anything 🌆",
-    ],
-    "night": [
-        "Midnight snack cam, {name}. We know you're in the kitchen. Don't lie 🌃",
-        "{name}, it's late for you — show us your winding-down setup 🛋️",
-        "Nighttime for {name}: post the last thing you touched before bed 🌙",
-    ],
-}
-
-# Fired at the GROUP of a sleeping member. Half sweet, half savage.
-SLEEP_PINGS_SWEET = [
-    "It's 3am for {name}. Say something nice they'll wake up to 🌙",
-    "{name} is fast asleep. Leave them a note for the morning 💌",
-    "Shhh — {name} is dreaming. Drop a memory of them you love 🫶",
-    "{name} is offline in dreamland. Tell the group why you're glad they exist ✨",
-]
-SLEEP_PINGS_SAVAGE = [
-    "It's 3am for {name}. They're unconscious and defenceless. Post your honest opinion 😈",
-    "{name} is asleep. Leave a note. Bonus points if it's unhinged ✍️",
-    "It's stupid-o'clock for {name}. Predict the dumb thing they'll do tomorrow 🔮",
-    "{name} is dreaming right now. Guess what about — loser buys the next call 💭",
-    "{name} can't defend themselves rn (asleep). Roast them lovingly 🔥",
-]
-
-# No specific target — everyone joins in. Fire any time.
-GROUP_PROMPTS = [
-    "EVERYONE: last photo in your camera roll. GO. No editing, no explaining 📸",
-    "Show us your screen time number. No cropping. We're all disappointed together 📱",
-    "Sum up your week so far in a movie title 🎬",
-    "Ugliest selfie you can produce in 10 seconds. Beauty is banned today 🤪",
-    "What's the weather where you are? Prove it with a window pic 🌦️",
-    "Show us your current view without moving from where you're sitting 🪑",
-    "Drop the song stuck in your head right now — we're building a group playlist 🎧",
-]
-
-# Softer connection prompts; {name} lines target a random member.
-CONNECTION_PROMPTS_TARGETED = [
-    "Send {name} a voice note — you haven't heard their voice in too long 🎙️",
-]
-CONNECTION_PROMPTS_GENERAL = [
-    "Drop a throwback pic of the group. Instant nostalgia tax 📼",
-]
+from dataclasses import dataclass
+from html import escape
 
 
-def pick_activity(activity_key: str, name: str) -> str:
-    lines = ACTIVITY_PROMPTS.get(activity_key)
-    if not lines:
-        return random.choice(GROUP_PROMPTS)
-    return random.choice(lines).format(name=name)
+@dataclass(frozen=True)
+class PromptOption:
+    id: str
+    label: str
 
 
-def pick_sleep_ping(name: str) -> str:
-    pool = SLEEP_PINGS_SWEET + SLEEP_PINGS_SAVAGE
-    return random.choice(pool).format(name=name)
+@dataclass(frozen=True)
+class DailyPrompt:
+    id: str
+    question: str
+    options: tuple[PromptOption, ...]
 
 
-def pick_group_prompt() -> str:
-    return random.choice(GROUP_PROMPTS)
-
-
-def pick_connection_prompt(names: list[str]) -> str:
-    """Prefer a targeted line if we have names to aim at; else a general one."""
-    if names and random.random() < 0.6:
-        return random.choice(CONNECTION_PROMPTS_TARGETED).format(
-            name=random.choice(names)
-        )
-    return random.choice(CONNECTION_PROMPTS_GENERAL)
-
-
-def flavour(gemini, base_line: str) -> str:
-    """Optionally rephrase a prompt via Gemini in the bot's chaotic-funny voice.
-
-    Falls back to the original line whenever Gemini is unavailable or the
-    rewrite looks broken (too long / dropped the {name} intent).
-    """
-    if gemini is None or not getattr(gemini, "enabled", False):
-        return base_line
-    ask = (
-        "Rewrite this friend-group prompt in a chaotic, funny, warm tone for a "
-        "long-distance-friends Telegram bot. Keep it ONE short line, keep any "
-        "names exactly as written, keep an emoji, and don't add quotes:\n\n"
-        f"{base_line}"
+def _prompt(prompt_id: str, question: str, *options: tuple[str, str]) -> DailyPrompt:
+    return DailyPrompt(
+        id=prompt_id,
+        question=question,
+        options=tuple(PromptOption(option_id, label) for option_id, label in options),
     )
-    out = gemini.generate(ask)
-    if not out:
-        return base_line
-    out = out.strip().strip('"').split("\n")[0].strip()
-    # Sanity guard: keep it short and don't let it drop a targeted name.
-    if not out or len(out) > 200:
-        return base_line
-    return out
+
+
+DAILY_PROMPTS: tuple[DailyPrompt, ...] = (
+    _prompt(
+        "feeling_today",
+        "How do you feel today?",
+        ("good", "🙂 Good"),
+        ("okay", "😐 Okay"),
+        ("tired", "😴 Tired"),
+        ("calm", "😌 Calm"),
+        ("stressed", "😟 Stressed"),
+        ("low", "😞 Low"),
+        ("excited", "🤩 Excited"),
+        ("numb", "😶 Numb"),
+    ),
+    _prompt(
+        "mood_today",
+        "What is your mood?",
+        ("positive", "Positive"),
+        ("neutral", "Neutral"),
+        ("quiet", "Quiet"),
+        ("busy", "Busy"),
+        ("unsettled", "Unsettled"),
+    ),
+    _prompt(
+        "coffee_or_tea",
+        "Coffee or tea?",
+        ("coffee", "☕ Coffee"),
+        ("tea", "🍵 Tea"),
+    ),
+    _prompt(
+        "early_or_late",
+        "Early night or late night?",
+        ("early", "Early night"),
+        ("late", "Late night"),
+    ),
+    _prompt(
+        "sweet_or_savoury",
+        "Sweet or savoury?",
+        ("sweet", "Sweet"),
+        ("savoury", "Savoury"),
+    ),
+    _prompt(
+        "stay_or_go",
+        "Stay in or go out?",
+        ("stay_in", "Stay in"),
+        ("go_out", "Go out"),
+    ),
+    _prompt(
+        "music_or_silence",
+        "Music or silence?",
+        ("music", "Music"),
+        ("silence", "Silence"),
+    ),
+    _prompt(
+        "rate_day",
+        "Rate your day from 1–5.",
+        ("1", "1"),
+        ("2", "2"),
+        ("3", "3"),
+        ("4", "4"),
+        ("5", "5"),
+    ),
+    _prompt(
+        "rate_energy",
+        "Rate your energy from 1–5.",
+        ("1", "1"),
+        ("2", "2"),
+        ("3", "3"),
+        ("4", "4"),
+        ("5", "5"),
+    ),
+    _prompt(
+        "rate_week",
+        "Rate your week so far from 1–5.",
+        ("1", "1"),
+        ("2", "2"),
+        ("3", "3"),
+        ("4", "4"),
+        ("5", "5"),
+    ),
+    _prompt(
+        "rate_busy",
+        "How busy are you today from 1–5?",
+        ("1", "1"),
+        ("2", "2"),
+        ("3", "3"),
+        ("4", "4"),
+        ("5", "5"),
+    ),
+    _prompt(
+        "describe_today",
+        "One word for today.",
+        ("good", "Good"),
+        ("okay", "Okay"),
+        ("busy", "Busy"),
+        ("tiring", "Tiring"),
+        ("difficult", "Difficult"),
+        ("peaceful", "Peaceful"),
+    ),
+    _prompt(
+        "describe_week",
+        "One word for your week.",
+        ("good", "Good"),
+        ("busy", "Busy"),
+        ("slow", "Slow"),
+        ("difficult", "Difficult"),
+        ("promising", "Promising"),
+    ),
+    _prompt(
+        "doing_now",
+        "What are you doing now?",
+        ("work", "Working/studying"),
+        ("resting", "Resting"),
+        ("eating", "Eating"),
+        ("commuting", "Commuting"),
+        ("nothing", "Nothing much"),
+    ),
+    _prompt(
+        "listening_now",
+        "What are you listening to?",
+        ("music", "Music"),
+        ("podcast", "Podcast"),
+        ("people", "People talking"),
+        ("nothing", "Nothing"),
+    ),
+    _prompt(
+        "ate_today",
+        "What did you eat today?",
+        ("home_cooked", "Home-cooked food"),
+        ("takeaway", "Takeaway"),
+        ("snacks", "Snacks"),
+        ("restaurant", "Restaurant"),
+        ("not_yet", "Not yet"),
+    ),
+    _prompt(
+        "looking_forward_to",
+        "What are you looking forward to?",
+        ("rest", "Rest"),
+        ("food", "Food"),
+        ("weekend", "The weekend"),
+        ("free_time", "Free time"),
+        ("seeing_someone", "Seeing someone"),
+        ("nothing", "Nothing specific"),
+    ),
+    _prompt(
+        "went_well",
+        "What went well today?",
+        ("work", "Work/school"),
+        ("food", "Food"),
+        ("rest", "Rest"),
+        ("people", "Friends/family"),
+        ("small_win", "A small win"),
+        ("nothing_yet", "Nothing yet"),
+    ),
+    _prompt(
+        "difficult_today",
+        "What was difficult today?",
+        ("work", "Work/school"),
+        ("time", "Time management"),
+        ("people", "People"),
+        ("energy", "Low energy"),
+        ("nothing", "Nothing difficult"),
+    ),
+    _prompt(
+        "made_easier",
+        "What made today easier?",
+        ("rest", "Rest"),
+        ("food", "Food"),
+        ("music", "Music"),
+        ("routine", "Routine"),
+        ("people", "People"),
+        ("nothing", "Nothing yet"),
+    ),
+    _prompt(
+        "improve_today",
+        "What would improve today?",
+        ("rest", "More rest"),
+        ("food", "A good meal"),
+        ("time", "More time"),
+        ("company", "Company"),
+        ("quiet", "Some quiet"),
+        ("nothing", "Nothing"),
+    ),
+    _prompt(
+        "need_more",
+        "What do you need more of this week?",
+        ("sleep", "Sleep"),
+        ("rest", "Rest"),
+        ("focus", "Focus"),
+        ("fun", "Fun"),
+        ("time", "Time"),
+        ("support", "Support"),
+    ),
+)
+
+_PROMPTS_BY_ID = {prompt.id: prompt for prompt in DAILY_PROMPTS}
+
+
+def daily_prompt_ids() -> tuple[str, ...]:
+    return tuple(prompt.id for prompt in DAILY_PROMPTS)
+
+
+def get_daily_prompt(prompt_id: str) -> DailyPrompt:
+    return _PROMPTS_BY_ID[prompt_id]
+
+
+def choose_daily_prompt_id(used_ids: set[str]) -> str:
+    available = [prompt.id for prompt in DAILY_PROMPTS if prompt.id not in used_ids]
+    return random.choice(available or list(_PROMPTS_BY_ID))
+
+
+def get_prompt_option(prompt_id: str, option_id: str) -> PromptOption | None:
+    prompt = _PROMPTS_BY_ID.get(prompt_id)
+    if prompt is None:
+        return None
+    return next((option for option in prompt.options if option.id == option_id), None)
+
+
+def daily_keyboard(prompt: DailyPrompt, prompt_date: str):
+    """Build a compact two-column inline keyboard for a daily prompt."""
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+
+    buttons = [
+        InlineKeyboardButton(
+            option.label,
+            callback_data=f"daily|{prompt_date}|{prompt.id}|{option.id}",
+        )
+        for option in prompt.options
+    ]
+    rows = [buttons[index : index + 2] for index in range(0, len(buttons), 2)]
+    return InlineKeyboardMarkup(rows)
+
+
+def format_daily_message(
+    prompt: DailyPrompt,
+    counts: dict[str, int],
+    callouts=(),
+) -> str:
+    """Render the prompt, anonymous totals, and any dramatic callouts."""
+    lines = [f"<b>{escape(prompt.question)}</b>", "", "<i>Anonymous totals</i>", ""]
+    for option in prompt.options:
+        lines.append(f"{escape(option.label)}: {counts.get(option.id, 0)}")
+
+    if callouts:
+        lines.extend(
+            [
+                "",
+                "🚨 <b>Attendance emergency</b> 🚨",
+                "",
+                "We hope they are okay. We also hope they know we noticed.",
+            ]
+        )
+        for member in callouts:
+            mention = (
+                f'<a href="tg://user?id={member.user_id}">'
+                f"{escape(member.name)}</a>"
+            )
+            lines.append(
+                f"{mention} has missed the last 2 check-ins. "
+                "Their silence has been documented."
+            )
+    return "\n".join(lines)
