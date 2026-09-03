@@ -25,6 +25,7 @@ from telegram.ext import (
 )
 
 import scheduler
+import prompts
 from config import load_config
 from db import DB, DEFAULT_SLEEP_START, DEFAULT_SLEEP_END
 from gemini import Gemini
@@ -274,10 +275,12 @@ async def cmd_me(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def on_daily_answer(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Record one valid daily answer and refresh anonymous totals."""
     query = update.callback_query
+    # A callback must be acknowledged immediately or Telegram keeps the button
+    # spinner running while the database and message update are in progress.
+    await query.answer()
 
     parts = (query.data or "").split("|", 3)
     if len(parts) != 4 or parts[0] != "daily":
-        await query.answer()
         return
 
     _, prompt_date, prompt_id, option_id = parts
@@ -285,10 +288,8 @@ async def on_daily_answer(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     user = query.from_user
     db: DB = context.application.bot_data["db"]
     if chat.type not in (ChatType.GROUP, ChatType.SUPERGROUP):
-        await query.answer("This check-in is for the group chat.", show_alert=True)
         return
     if not db.is_group_member(chat.id, user.id):
-        await query.answer("Run /setup in this group first.", show_alert=True)
         return
 
     daily_prompt = db.get_daily_prompt(chat.id, prompt_date)
@@ -299,14 +300,12 @@ async def on_daily_answer(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         or daily_prompt["prompt_id"] != prompt_id
         or option is None
     ):
-        await query.answer("This check-in is no longer active.", show_alert=True)
         return
 
     inserted = db.record_daily_response(
         chat.id, user.id, prompt_date, prompt_id, option_id
     )
     if not inserted:
-        await query.answer("You already answered this check-in.")
         return
 
     counts = db.daily_response_counts(chat.id, prompt_date)
@@ -318,7 +317,6 @@ async def on_daily_answer(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         parse_mode="HTML",
         reply_markup=prompts.daily_keyboard(prompt, prompt_date),
     )
-    await query.answer(f"Saved: {option.label}")
 
 
 # --------------------------------------------------------------------------
