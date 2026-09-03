@@ -20,12 +20,33 @@ class DailyResponseTests(unittest.TestCase):
             100, 7, "2026-09-01", "coffee_or_tea", "coffee"
         )
         duplicate = self.db.record_daily_response(
-            100, 7, "2026-09-01", "coffee_or_tea", "tea"
+            100, 7, "2026-09-01", "coffee_or_tea", "coffee"
         )
 
         self.assertTrue(first)
         self.assertFalse(duplicate)
         self.assertEqual(self.db.daily_response_counts(100, "2026-09-01"), {"coffee": 1})
+
+    def test_changing_vote_moves_the_anonymous_count(self):
+        self.db.record_daily_prompt(100, "2026-09-02", "coffee_or_tea")
+
+        self.assertTrue(
+            self.db.record_daily_response(
+                100, 7, "2026-09-02", "coffee_or_tea", "coffee"
+            )
+        )
+        self.assertTrue(
+            self.db.record_daily_response(
+                100, 7, "2026-09-02", "coffee_or_tea", "tea"
+            )
+        )
+        self.assertEqual(self.db.daily_response_counts(100, "2026-09-02"), {"tea": 1})
+
+        self.assertFalse(
+            self.db.record_daily_response(
+                100, 7, "2026-09-02", "coffee_or_tea", "tea"
+            )
+        )
 
     def test_two_missed_prompts_trigger_one_callout_until_user_answers(self):
         self.db.record_daily_prompt(100, "2026-09-01", "p1")

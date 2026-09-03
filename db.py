@@ -410,25 +410,37 @@ class DB:
         option_id: str,
     ) -> bool:
         with self._cursor() as cur:
+            existing = cur.execute(
+                """
+                SELECT option_id
+                FROM daily_responses
+                WHERE chat_id=? AND prompt_date=? AND user_id=?
+                """,
+                (chat_id, prompt_date, user_id),
+            ).fetchone()
+            if existing and existing["option_id"] == option_id:
+                return False
+
             cur.execute(
                 """
-                INSERT OR IGNORE INTO daily_responses
+                INSERT INTO daily_responses
                     (chat_id, prompt_date, user_id, prompt_id, option_id)
                 VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(chat_id, prompt_date, user_id) DO UPDATE SET
+                    prompt_id=excluded.prompt_id,
+                    option_id=excluded.option_id
                 """,
                 (chat_id, prompt_date, user_id, prompt_id, option_id),
             )
-            inserted = cur.rowcount == 1
-            if inserted:
-                cur.execute(
-                    """
-                    UPDATE memberships
-                    SET daily_callout_active=0
-                    WHERE chat_id=? AND user_id=?
-                    """,
-                    (chat_id, user_id),
-                )
-        return inserted
+            cur.execute(
+                """
+                UPDATE memberships
+                SET daily_callout_active=0
+                WHERE chat_id=? AND user_id=?
+                """,
+                (chat_id, user_id),
+            )
+        return True
 
     def daily_response_counts(self, chat_id: int, prompt_date: str) -> dict[str, int]:
         with self._cursor() as cur:
