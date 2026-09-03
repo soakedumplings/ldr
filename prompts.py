@@ -293,3 +293,58 @@ def format_daily_message(
                 "Their silence has been documented."
             )
     return "\n".join(lines)
+
+
+def format_daily_summary(prompt: DailyPrompt, counts: dict[str, int]) -> str:
+    lines = [f"<b>Today's check-in: {escape(prompt.question)}</b>", ""]
+    for option in prompt.options:
+        total = counts.get(option.id, 0)
+        if total:
+            lines.append(f"{escape(option.label)}: {total}")
+    if len(lines) == 2:
+        lines.append("No responses today.")
+    return "\n".join(lines)
+
+
+def format_explanation_poll(
+    prompt: DailyPrompt,
+    respondents,
+    counts: dict[int, int],
+    closes_at: str,
+) -> str:
+    close_display = closes_at.split("T", 1)[-1][:5]
+    lines = [
+        "<b>Who should explain their choice?</b>",
+        "",
+        "Choose someone who answered today's check-in.",
+        f"Voting closes at {escape(close_display)} Singapore time.",
+        "",
+    ]
+    for person in respondents:
+        option = get_prompt_option(prompt.id, person.option_id)
+        answer = option.label if option else person.option_id
+        lines.append(
+            f"{escape(person.name)} — {escape(answer)}: "
+            f"{counts.get(person.user_id, 0)}"
+        )
+    return "\n".join(lines)
+
+
+def explanation_keyboard(respondents, prompt_date: str):
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+
+    buttons = [
+        InlineKeyboardButton(
+            person.name,
+            callback_data=f"explain|{prompt_date}|{person.user_id}",
+        )
+        for person in respondents
+    ]
+    rows = [buttons[index : index + 2] for index in range(0, len(buttons), 2)]
+    return InlineKeyboardMarkup(rows)
+
+
+def closed_explanation_keyboard():
+    from telegram import InlineKeyboardMarkup
+
+    return InlineKeyboardMarkup([])

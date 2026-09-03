@@ -25,6 +25,7 @@ _RT_OPEN_DOW = 4   # Friday: DM everyone for their submission
 _RT_OPEN_HOUR = 10
 _RT_RECAP_DOW = 6  # Sunday: post the recap + settle streaks
 _RT_RECAP_HOUR = 18
+_SINGAPORE = ZoneInfo("Asia/Singapore")
 
 
 # --------------------------------------------------------------------------
@@ -56,6 +57,25 @@ def _is_asleep(member: Member, now: datetime) -> bool:
 def week_key(dt: datetime) -> str:
     iso = dt.isocalendar()
     return f"{iso.year}-W{iso.week:02d}"
+
+
+def singapore_date(now_utc: datetime) -> str:
+    return now_utc.astimezone(_SINGAPORE).date().isoformat()
+
+
+def daily_summary_due(now_utc: datetime) -> bool:
+    local = now_utc.astimezone(_SINGAPORE)
+    return local.hour >= 18
+
+
+def daily_explanation_close(now_utc: datetime) -> datetime:
+    local = now_utc.astimezone(_SINGAPORE)
+    return local.replace(hour=21, minute=0, second=0, microsecond=0)
+
+
+def explanation_close_due(now_utc: datetime) -> bool:
+    local = now_utc.astimezone(_SINGAPORE)
+    return local.hour >= 21
 
 
 # --------------------------------------------------------------------------
@@ -95,6 +115,18 @@ async def run_tick(bot, db: DB, gemini) -> None:
         if state.get("last_daily_date") != today:
             await _send_daily_checkin(bot, db, chat_id, today)
 
+        # --- daily anonymous summary + explanation poll (6pm SGT) ---
+        local_today = singapore_date(now_utc)
+        if (
+            daily_summary_due(now_utc)
+            and state.get("last_daily_summary_date") != local_today
+        ):
+            await _send_daily_summary(bot, db, chat_id, today, local_today, now_utc)
+
+        # --- close explanation poll and request the video note (9pm SGT) ---
+        if explanation_close_due(now_utc):
+            await _close_due_explanation_polls(bot, db, chat_id, now_utc)
+
 
 async def _send_daily_checkin(bot, db: DB, chat_id: int, today: str) -> None:
     """Send a fresh one-tap check-in and record it only after delivery."""
@@ -116,6 +148,76 @@ async def _send_daily_checkin(bot, db: DB, chat_id: int, today: str) -> None:
     )
     db.record_daily_prompt(chat_id, today, prompt_id, cycle, message.message_id)
     db.set_group_state(chat_id, last_daily_date=today)
+
+
+async def _send_daily_summary(
+    bot, db: DB, chat_id: int, prompt_date: str, local_date: str, now_utc: datetime
+) -> None:
+    daily_prompt = db.get_daily_prompt(chat_id, prompt_date)
+    if daily_prompt is None:
+        return
+
+    prompt = prompts.get_daily_prompt(daily_prompt["prompt_id"])
+    respondents = db.daily_respondents(chat_id, prompt_date)
+    summary_message = await bot.send_message(
+        chat_id=chat_id,
+        text=prompts.format_daily_summary(
+            prompt, db.daily_response_counts(chat_id, prompt_date)
+        ),
+        parse_mode="HTML",
+    )
+
+    if respondents:
+        close_at = daily_explanation_close(now_utc).isoformat()
+        poll_message = await bot.send_message(
+            chat_id=chat_id,
+            text=prompts.format_explanation_poll(
+                prompt, respondents, {}, close_at
+            ),
+            parse_mode="HTML",
+            reply_markup=prompts.explanation_keyboard(respondents, prompt_date),
+        )
+        db.record_daily_explanation_poll(
+            chat_id,
+            prompt_date,
+            summary_message.message_id,
+            poll_message.message_id,
+            close_at,
+        )
+    db.set_group_state(chat_id, last_daily_summary_date=local_date)
+
+
+async def _close_due_explanation_polls(bot, db: DB, chat_id: int, now_utc: datetime) -> None:
+    now_iso = now_utc.astimezone(_SINGAPORE).isoformat()
+    for poll in db.due_daily_explanation_polls(chat_id, now_iso):
+        winner = db.close_daily_explanation_poll(chat_id, poll["prompt_date"], now_iso)
+        try:
+            await bot.edit_message_reply_markup(
+                chat_id=chat_id,
+                message_id=poll["message_id"],
+                reply_markup=prompts.closed_explanation_keyboard(),
+            )
+        except Exception as exc:
+            log.info("could not close explanation poll buttons: %s", exc)
+        if winner is None:
+            text = "No one was selected to explain their choice today."
+        else:
+            daily_prompt = db.get_daily_prompt(chat_id, poll["prompt_date"])
+            option = prompts.get_prompt_option(
+                daily_prompt["prompt_id"], winner.option_id
+            )
+            answer = option.label if option else winner.option_id
+            mention = (
+                f'<a href="tg://user?id={winner.user_id}">'
+                f"{prompts.escape(winner.name)}</a>"
+            )
+            text = (
+                f"🎥 {mention}, the group chose you.\n\n"
+                f"You chose <b>{prompts.escape(answer)}</b> today. "
+                "Please send a short video note explaining why."
+            )
+        await bot.send_message(chat_id=chat_id, text=text, parse_mode="HTML")
+        db.mark_daily_explanation_announced(chat_id, poll["prompt_date"], now_iso)
 
 
 async def _open_rose_and_thorn(bot, db: DB, chat_id, members, wk: str) -> None:

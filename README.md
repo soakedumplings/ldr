@@ -10,6 +10,11 @@ photo ritual with streaks. No same-time coordination needed; everything is async
 - 📊 **Daily check-in** — one short question with predefined one-tap answers.
   Results appear as anonymous totals. Prompts rotate through the full bank before
   repeating. Anyone who misses two check-ins can receive a dramatic group callout.
+- 🕕 **Daily summary** — at 6:00 PM Singapore time, the bot posts that day's
+  anonymous results and opens a second poll asking who should explain their choice.
+  Votes can change until 9:00 PM Singapore time. The selected person is tagged,
+  their original answer is revealed, and they are asked to send a short Telegram
+  video note.
 - 🌍 **Multi-group aware** — add it to several friend groups. Recaps and
   daily check-ins go **only to the relevant group**, never leak across chats.
 - ⚙️ **Per-person timezone + sleep window**, changeable anytime with `/setup`.
@@ -121,9 +126,9 @@ That's it — it runs 24/7. To update code later: `fly deploy` again.
 ## Privacy
 
 The bot stores only what streaks and scheduling need: each person's timezone +
-sleep window, group membership, streak counts, and one-tap daily check-in
-responses. Daily response totals are shown anonymously. The current week's Rose
-& Thorn entry keeps a Telegram photo reference + caption **only until the Sunday
+sleep window, group membership, streak counts, one-tap daily check-in responses,
+and daily explanation-poll votes. Daily response totals are shown anonymously.
+The current week's Rose & Thorn entry keeps a Telegram photo reference + caption **only until the Sunday
 recap posts**, then it's deleted. No chat messages are stored. Secrets live in
 `.env` (git-ignored), never in code.
 

@@ -54,7 +54,8 @@ HELP_TEXT = (
     "it's a HIGH 🌹 or LOW 🥀 and a quick note. Miss it = streak dies (publicly 💔). "
     "Sunday I post the group recap.\n"
     "📊 *Daily check-in* — answer one short question with one tap. "
-    "Results are shown as anonymous group totals.\n\n"
+    "Results are shown as anonymous group totals. At 6:00 PM Singapore time, "
+    "I post the results and open a 3-hour poll to choose who explains their answer.\n\n"
     "_Add me to your friend group, everyone runs /setup, then just live your "
     "life. I'll do the clingy part._"
 )
@@ -319,6 +320,55 @@ async def on_daily_answer(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     )
 
 
+async def on_explanation_vote(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Record or replace a vote for who should explain today's answer."""
+    query = update.callback_query
+    await query.answer()
+
+    parts = (query.data or "").split("|", 2)
+    if len(parts) != 3 or parts[0] != "explain":
+        return
+
+    _, prompt_date, target_id_text = parts
+    try:
+        target_user_id = int(target_id_text)
+    except ValueError:
+        return
+
+    chat = query.message.chat
+    user = query.from_user
+    db: DB = context.application.bot_data["db"]
+    if chat.type not in (ChatType.GROUP, ChatType.SUPERGROUP):
+        return
+    if not db.is_group_member(chat.id, user.id):
+        return
+
+    now_iso = datetime.now(ZoneInfo("UTC")).astimezone(
+        ZoneInfo("Asia/Singapore")
+    ).isoformat()
+    if not db.record_explanation_vote(
+        chat.id, prompt_date, user.id, target_user_id, now_iso
+    ):
+        return
+
+    poll = db.get_daily_explanation_poll(chat.id, prompt_date)
+    daily_prompt = db.get_daily_prompt(chat.id, prompt_date)
+    if poll is None or daily_prompt is None:
+        return
+    prompt = prompts.get_daily_prompt(daily_prompt["prompt_id"])
+    respondents = db.daily_respondents(chat.id, prompt_date)
+    await query.edit_message_text(
+        text=prompts.format_explanation_poll(
+            prompt,
+            respondents,
+            db.explanation_vote_counts(chat.id, prompt_date),
+            poll["closes_at"],
+        ),
+        parse_mode="HTML",
+        reply_markup=prompts.explanation_keyboard(respondents, prompt_date),
+    )
+
+
 # --------------------------------------------------------------------------
 # Rose & Thorn photo capture (private DM only)
 # --------------------------------------------------------------------------
@@ -451,6 +501,9 @@ def main() -> None:
     app.add_handler(CommandHandler("board", cmd_board))
     app.add_handler(CommandHandler("me", cmd_me))
     app.add_handler(CallbackQueryHandler(on_daily_answer, pattern=r"^daily\|"))
+    app.add_handler(
+        CallbackQueryHandler(on_explanation_vote, pattern=r"^explain\|")
+    )
 
     app.add_handler(MessageHandler(filters.PHOTO, on_photo))
     app.add_handler(
