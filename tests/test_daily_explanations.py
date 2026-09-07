@@ -20,7 +20,7 @@ class DailyExplanationTests(unittest.TestCase):
             100, 8, "2026-09-03", "feeling_today", "calm"
         )
         self.db.record_daily_explanation_poll(
-            100, "2026-09-03", 501, 502, "2026-09-03T21:00:00+08:00"
+            100, "2026-09-03", 501, 502, "2026-09-03T22:00:00+08:00"
         )
 
     def tearDown(self):
@@ -43,14 +43,14 @@ class DailyExplanationTests(unittest.TestCase):
         )
         self.assertFalse(self.db.record_explanation_vote(100, "2026-09-03", 8, 8))
 
-    def test_explanation_vote_is_rejected_after_three_hour_deadline(self):
+    def test_explanation_vote_is_rejected_after_four_hour_deadline(self):
         self.assertFalse(
             self.db.record_explanation_vote(
                 100,
                 "2026-09-03",
                 7,
                 8,
-                "2026-09-03T21:00:00+08:00",
+                "2026-09-03T22:00:00+08:00",
             )
         )
 
@@ -59,7 +59,7 @@ class DailyExplanationTests(unittest.TestCase):
         self.db.record_explanation_vote(100, "2026-09-03", 8, 8)
 
         winner = self.db.close_daily_explanation_poll(
-            100, "2026-09-03", "2026-09-03T21:00:00+08:00"
+            100, "2026-09-03", "2026-09-03T22:00:00+08:00"
         )
 
         self.assertEqual(winner.user_id, 8)
@@ -78,7 +78,7 @@ class DailyExplanationTests(unittest.TestCase):
         )
 
         due = self.db.due_daily_explanation_polls(
-            100, "2026-09-03T21:00:00+08:00"
+            100, "2026-09-03T22:00:00+08:00"
         )
 
         self.assertEqual([poll["chat_id"] for poll in due], [100])
@@ -89,7 +89,7 @@ class DailyExplanationTests(unittest.TestCase):
 
         summary = prompts.format_daily_summary(prompt, {"tired": 1, "calm": 1})
         poll = prompts.format_explanation_poll(
-            prompt, respondents, {7: 1, 8: 0}, "2026-09-03T21:00:00+08:00"
+            prompt, respondents, {7: 1, 8: 0}, "2026-09-03T22:00:00+08:00"
         )
 
         self.assertIn("Today's check-in", summary)

@@ -26,6 +26,9 @@ _RT_OPEN_HOUR = 10
 _RT_RECAP_DOW = 6  # Sunday: post the recap + settle streaks
 _RT_RECAP_HOUR = 18
 _SINGAPORE = ZoneInfo("Asia/Singapore")
+_DAILY_PROMPT_HOUR = 16
+_DAILY_SUMMARY_HOUR = 18
+_DAILY_EXPLANATION_CLOSE_HOUR = 22
 
 
 # --------------------------------------------------------------------------
@@ -63,19 +66,26 @@ def singapore_date(now_utc: datetime) -> str:
     return now_utc.astimezone(_SINGAPORE).date().isoformat()
 
 
+def daily_prompt_due(now_utc: datetime) -> bool:
+    local = now_utc.astimezone(_SINGAPORE)
+    return local.hour >= _DAILY_PROMPT_HOUR
+
+
 def daily_summary_due(now_utc: datetime) -> bool:
     local = now_utc.astimezone(_SINGAPORE)
-    return local.hour >= 18
+    return local.hour >= _DAILY_SUMMARY_HOUR
 
 
 def daily_explanation_close(now_utc: datetime) -> datetime:
     local = now_utc.astimezone(_SINGAPORE)
-    return local.replace(hour=21, minute=0, second=0, microsecond=0)
+    return local.replace(
+        hour=_DAILY_EXPLANATION_CLOSE_HOUR, minute=0, second=0, microsecond=0
+    )
 
 
 def explanation_close_due(now_utc: datetime) -> bool:
     local = now_utc.astimezone(_SINGAPORE)
-    return local.hour >= 21
+    return local.hour >= _DAILY_EXPLANATION_CLOSE_HOUR
 
 
 # --------------------------------------------------------------------------
@@ -110,20 +120,24 @@ async def run_tick(bot, db: DB, gemini) -> None:
             await _recap_rose_and_thorn(bot, db, gemini, chat_id, members, wk)
             db.set_group_state(chat_id, last_rt_recap=wk)
 
-        # --- daily prompt (once per UTC day per group) ---
-        today = now_utc.date().isoformat()
-        if state.get("last_daily_date") != today:
-            await _send_daily_checkin(bot, db, chat_id, today)
+        # --- daily prompt (4pm Singapore time, once per local day per group) ---
+        local_today = singapore_date(now_utc)
+        if (
+            daily_prompt_due(now_utc)
+            and state.get("last_daily_date") != local_today
+        ):
+            await _send_daily_checkin(bot, db, chat_id, local_today)
 
         # --- daily anonymous summary + explanation poll (6pm SGT) ---
-        local_today = singapore_date(now_utc)
         if (
             daily_summary_due(now_utc)
             and state.get("last_daily_summary_date") != local_today
         ):
-            await _send_daily_summary(bot, db, chat_id, today, local_today, now_utc)
+            await _send_daily_summary(
+                bot, db, chat_id, local_today, local_today, now_utc
+            )
 
-        # --- close explanation poll and request the video note (9pm SGT) ---
+        # --- close explanation poll and request the video note (10pm SGT) ---
         if explanation_close_due(now_utc):
             await _close_due_explanation_polls(bot, db, chat_id, now_utc)
 

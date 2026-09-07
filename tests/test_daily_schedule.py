@@ -6,18 +6,27 @@ import scheduler
 
 
 class DailyScheduleTests(unittest.TestCase):
+    def test_daily_question_is_due_at_4pm_singapore_time(self):
+        before_question = datetime(2026, 9, 3, 7, 59, tzinfo=ZoneInfo("UTC"))
+        question_time = datetime(2026, 9, 3, 8, 0, tzinfo=ZoneInfo("UTC"))
+
+        self.assertFalse(scheduler.daily_prompt_due(before_question))
+        self.assertTrue(scheduler.daily_prompt_due(question_time))
+
     def test_summary_and_close_windows_are_singapore_time(self):
         before_summary = datetime(2026, 9, 3, 9, 59, tzinfo=ZoneInfo("UTC"))
         summary_time = datetime(2026, 9, 3, 10, 0, tzinfo=ZoneInfo("UTC"))
-        close_time = datetime(2026, 9, 3, 13, 0, tzinfo=ZoneInfo("UTC"))
+        before_close = datetime(2026, 9, 3, 13, 59, tzinfo=ZoneInfo("UTC"))
+        close_time = datetime(2026, 9, 3, 14, 0, tzinfo=ZoneInfo("UTC"))
 
         self.assertFalse(scheduler.daily_summary_due(before_summary))
         self.assertTrue(scheduler.daily_summary_due(summary_time))
         self.assertEqual(scheduler.singapore_date(summary_time), "2026-09-03")
         self.assertEqual(
             scheduler.daily_explanation_close(summary_time).isoformat(),
-            "2026-09-03T21:00:00+08:00",
+            "2026-09-03T22:00:00+08:00",
         )
+        self.assertFalse(scheduler.explanation_close_due(before_close))
         self.assertTrue(scheduler.explanation_close_due(close_time))
 
 

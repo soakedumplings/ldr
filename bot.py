@@ -53,9 +53,9 @@ HELP_TEXT = (
     "🌹 *Weekly Rose & Thorn* — I DM you for *one* photo + a caption saying if "
     "it's a HIGH 🌹 or LOW 🥀 and a quick note. Miss it = streak dies (publicly 💔). "
     "Sunday I post the group recap.\n"
-    "📊 *Daily check-in* — answer one short question with one tap. "
-    "Results are shown as anonymous group totals. At 6:00 PM Singapore time, "
-    "I post the results and open a 3-hour poll to choose who explains their answer.\n\n"
+    "📊 *Daily check-in* — answer one short question with one tap at 4:00 PM "
+    "Singapore time. At 6:00 PM I post anonymous results and open a poll to "
+    "choose who explains their answer; at 10:00 PM I tag the chosen person.\n\n"
     "_Add me to your friend group, everyone runs /setup, then just live your "
     "life. I'll do the clingy part._"
 )
